@@ -12,22 +12,26 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import time
+import os
+import json
+from dotenv import load_dotenv
+
+import utilities.product_scraper as product_scraper
 
 # Google Sheets Setup
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
 ]
-
-# Configuration
-CREDENTIALS_FILE = 'credentials.json'  # Path to your Google service account JSON
-SHEET_NAME = 'The Absurd List of Absurd Shop Things'  # Change this to your sheet name
-WORKSHEET_NAME = 'Accserories'  # Change if different
-
-# Column Configuration (can use letter like 'A' or number like 1)
-URL_COLUMN = 'E'  # Column containing product URLs
-NAME_COLUMN = 'B'  # Column where product names will be written
-PRICE_COLUMN = 'D'  # Column where prices will be written
+load_dotenv()
+# Access the environment variables
+CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE','credentials.json')
+SHEET_NAME = os.getenv('SHEET_NAME','The Absurd List of Absurd Shop Things')
+WORKSHEET_NAME = os.getenv('WORKSHEET_NAME','Accserories') # Provide a default value
+# Access the environment variables
+URL_COLUMN = os.getenv('URL_COLUMN','E')
+NAME_COLUMN = os.getenv('NAME_COLUMN','B')
+PRICE_COLUMN = os.getenv('PRICE_COLUMN','D') # Provide a default value
 
 # Headers to mimic a browser
 HEADERS = {
@@ -38,6 +42,7 @@ HEADERS = {
     'Connection': 'keep-alive',
 }
 
+PRODUCT_SCRAPER_INSTANCE=product_scraper.ProductScraper(os.getenv('ZENROWS_API_KEY'))
 
 def get_google_sheet():
     """Connect to Google Sheets and return the worksheet"""
@@ -46,7 +51,6 @@ def get_google_sheet():
     spreadsheet = client.open(SHEET_NAME)
     worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
     return worksheet
-
 
 def column_to_index(col):
     """Convert column letter to index (A=0, B=1, etc.) or return number-1 if number given"""
@@ -63,7 +67,6 @@ def column_to_index(col):
         return result - 1
     return 0
 
-
 def index_to_letter(index):
     """Convert column index to letter (0=A, 1=B, etc.)"""
     letter = ''
@@ -74,194 +77,25 @@ def index_to_letter(index):
         index //= 26
     return letter
 
-
-def fetch_page(url):
-    """Fetch webpage content"""
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-        return None
-
-
-def clean_text(text):
-    """Clean extracted text"""
-    if not text:
-        return None
-    text = text.strip()
-    text = re.sub(r'\s+', ' ', text)
-    return text
-
-
 def get_domain(url):
     """Extract domain from URL"""
     match = re.search(r'https?://([^/]+)', url, re.IGNORECASE)
     return match.group(1).lower() if match else ''
 
-
-# ===== AMAZON EXTRACTORS =====
-def extract_amazon_name(soup):
-    """Extract product name from Amazon"""
-    # Try product title
-    title = soup.find('span', {'id': 'productTitle'})
-    if title:
-        return clean_text(title.get_text())
-    
-    # Try title tag
-    title = soup.find('title')
-    if title:
-        text = clean_text(title.get_text())
-        text = re.sub(r'^Amazon\.com\s*:\s*', '', text, flags=re.IGNORECASE)
-        return text
-    
-    return None
-
-
-def extract_amazon_price(soup):
-    """Extract price from Amazon"""
-    # Try whole price
-    price_whole = soup.find('span', class_='a-price-whole')
-    price_fraction = soup.find('span', class_='a-price-fraction')
-    if price_whole:
-        whole = price_whole.get_text().replace(',', '').replace('.', '')
-        fraction = price_fraction.get_text() if price_fraction else '00'
-        return f"${whole}.{fraction}"
-    
-    # Try offscreen price
-    price = soup.find('span', class_='a-offscreen')
-    if price:
-        price_text = price.get_text()
-        match = re.search(r'\$?([0-9,.]+)', price_text)
-        if match:
-            return f"${match.group(1).replace(',', '')}"
-    
-    return None
-
-
-# ===== HOME DEPOT EXTRACTORS =====
-def extract_homedepot_name(soup):
-    """Extract product name from Home Depot"""
-    # Try h1 with product title
-    title = soup.find('h1', class_=re.compile('product.*title', re.IGNORECASE))
-    if title:
-        return clean_text(title.get_text())
-    
-    # Try any h1
-    title = soup.find('h1')
-    if title:
-        return clean_text(title.get_text())
-    
-    # Try meta tag
-    meta = soup.find('meta', property='og:title')
-    if meta and meta.get('content'):
-        return clean_text(meta['content'])
-    
-    return None
-
-
-def extract_homedepot_price(soup):
-    """Extract price from Home Depot"""
-    # Try price span
-    price = soup.find('span', class_=re.compile('price', re.IGNORECASE))
-    if price:
-        price_text = price.get_text()
-        match = re.search(r'\$?([0-9,.]+)', price_text)
-        if match:
-            return f"${match.group(1).replace(',', '')}"
-    
-    # Try structured data
-    script = soup.find('script', type='application/ld+json')
-    if script:
-        match = re.search(r'"price"\s*:\s*"?([0-9,.]+)"?', script.string or '')
-        if match:
-            return f"${match.group(1).replace(',', '')}"
-    
-    return None
-
-
-# ===== ROCKLER EXTRACTORS =====
-def extract_rockler_name(soup):
-    """Extract product name from Rockler"""
-    # Try product name h1
-    title = soup.find('h1', class_=re.compile('product.*name', re.IGNORECASE))
-    if title:
-        return clean_text(title.get_text())
-    
-    # Try any h1
-    title = soup.find('h1')
-    if title:
-        return clean_text(title.get_text())
-    
-    # Try meta tag
-    meta = soup.find('meta', property='og:title')
-    if meta and meta.get('content'):
-        return clean_text(meta['content'])
-    
-    return None
-
-
-def extract_rockler_price(soup):
-    """Extract price from Rockler"""
-    # Try price span
-    price = soup.find('span', class_=re.compile('price', re.IGNORECASE))
-    if price:
-        price_text = price.get_text()
-        match = re.search(r'\$?([0-9,.]+)', price_text)
-        if match:
-            return f"${match.group(1).replace(',', '')}"
-    
-    # Try any price pattern in HTML
-    html_text = str(soup)
-    match = re.search(r'"price"\s*:\s*"?([0-9,.]+)"?', html_text)
-    if match:
-        return f"${match.group(1).replace(',', '')}"
-    
-    return None
-
-
-def extract_product_info(url):
-    """Extract product name and price from URL"""
-    html = fetch_page(url)
-    if not html:
-        return None, None
-    
-    soup = BeautifulSoup(html, 'lxml')
-    domain = get_domain(url)
-    
-    name = None
-    price = None
-    
-    if 'amazon' in domain:
-        print(f"  Extracting from Amazon...")
-        name = extract_amazon_name(soup)
-        price = extract_amazon_price(soup)
-    elif 'homedepot' in domain:
-        print(f"  Extracting from Home Depot...")
-        name = extract_homedepot_name(soup)
-        price = extract_homedepot_price(soup)
-    elif 'rockler' in domain:
-        print(f"  Extracting from Rockler...")
-        name = extract_rockler_name(soup)
-        price = extract_rockler_price(soup)
-    else:
-        print(f"  Unknown site, using generic extraction...")
-        # Generic extraction
-        meta = soup.find('meta', property='og:title')
-        if meta and meta.get('content'):
-            name = clean_text(meta['content'])
-        elif soup.find('title'):
-            name = clean_text(soup.find('title').get_text())
-        
-        # Generic price search
-        html_text = str(soup)
-        match = re.search(r'\$([0-9]{1,3}(?:,?[0-9]{3})*(?:\.[0-9]{2})?)', html_text)
-        if match:
-            price = f"${match.group(1).replace(',', '')}"
-    
-    return name, price
-
+def get_full_url(short_url: str) -> str | None:
+    try:
+        response = requests.get(short_url, allow_redirects=True, timeout=5)
+        # Check if the request was successful and a redirect occurred
+        if response.status_code == 200 and response.url != short_url:
+            return response.url
+        elif response.status_code == 200: # No redirect, original URL is the final URL
+            return short_url
+        else:
+            print(f"Error: Request failed with status code {response.status_code}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"Error during request: {e}")
+        return None
 
 def main():
     """Main function to process Google Sheet"""
@@ -296,13 +130,27 @@ def main():
             continue
         
         url = row[url_col_idx] if len(row) > url_col_idx else ''
+        full_url = get_full_url(url)
+
+        if full_url:
+            print(f"Original shortened URL: {url}")
+            print(f"Full URL: {full_url}")
+            url = full_url
         
         # Check if URL is valid and columns B and C are empty or need update
         if url and (url.startswith('http://') or url.startswith('https://')):
             print(f"\nProcessing row {i}: {url[:60]}...")
             
-            name, price = extract_product_info(url)
-            
+            scrape_results = PRODUCT_SCRAPER_INSTANCE.scrape(url)
+            name,domain,price = None,None,None
+            if scrape_results:
+                name = scrape_results.get("name")
+                price = scrape_results.get("price")
+                domain = scrape_results.get("domain")
+                url = scrape_results.get("url",url)  # Update URL if scraper provides a final URL
+            else:
+                name = None
+                price = None
             if name:
                 print(f"  ✓ Name: {name[:60]}...")
                 updates.append({
